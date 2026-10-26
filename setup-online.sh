@@ -8,6 +8,8 @@
 # ชื่อที่ใช้ได้: docker node emqx mysql nodered all
 
 MYSQL_PASS="1234"
+NODERED_USER="admin"
+NODERED_PASS="1234"   # รหัสเข้า Node-RED (ปล่อยว่าง "" = ไม่ตั้งรหัส)
 export DEBIAN_FRONTEND=noninteractive
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -97,8 +99,29 @@ if want nodered; then
     nodered/node-red:latest \
     || echo "!!! Node-RED ติดตั้งไม่สำเร็จ ดู error ด้านบน"
   sleep 8
-  docker exec nodered npm install --prefix /data node-red-node-mysql \
-    && docker restart nodered
+  docker exec nodered npm install --prefix /data node-red-node-mysql
+
+  if [ -n "$NODERED_PASS" ]; then
+    echo "ตั้งรหัสผ่าน Node-RED..."
+    # รอให้ Node-RED สร้างไฟล์ settings.js ก่อน
+    for i in $(seq 1 15); do
+      docker exec nodered test -f /data/settings.js && break
+      sleep 2
+    done
+    docker exec -e NR_USER="$NODERED_USER" -e NR_PASS="$NODERED_PASS" nodered node -e '
+      const fs = require("fs"), bcrypt = require("bcryptjs");
+      const f = "/data/settings.js";
+      let s = fs.readFileSync(f, "utf8");
+      s = s.replace(/^.*\/\* setup-online \*\/.*\n/m, "");
+      if (/^\s*adminAuth\s*:/m.test(s)) { console.log("มี adminAuth อยู่แล้ว ข้าม"); process.exit(0); }
+      const hash = bcrypt.hashSync(process.env.NR_PASS, 8);
+      const line = "\n    /* setup-online */ adminAuth: { type: \"credentials\", users: [{ username: " + JSON.stringify(process.env.NR_USER) + ", password: " + JSON.stringify(hash) + ", permissions: \"*\" }] },";
+      s = s.replace(/module\.exports\s*=\s*\{/, (m) => m + line);
+      fs.writeFileSync(f, s);
+      console.log("ตั้งรหัส Node-RED เรียบร้อย");
+    ' || echo "!!! ตั้งรหัส Node-RED ไม่สำเร็จ"
+  fi
+  docker restart nodered
 fi
 
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
@@ -111,7 +134,15 @@ IP=$(hostname -I | awk '{print $1}')
 echo
 # แสดงที่อยู่เฉพาะตัวที่รันอยู่จริง
 if want nodered; then
-  running nodered && echo "Node-RED : http://$IP:1880" || echo "Node-RED : ไม่ได้รัน"
+  if running nodered; then
+    if [ -n "$NODERED_PASS" ]; then
+      echo "Node-RED : http://$IP:1880  ($NODERED_USER / $NODERED_PASS)"
+    else
+      echo "Node-RED : http://$IP:1880  (ไม่มีรหัส)"
+    fi
+  else
+    echo "Node-RED : ไม่ได้รัน"
+  fi
 fi
 if want emqx; then
   running emqx && echo "EMQX     : http://$IP:18083  (admin / public)  MQTT: $IP:1883" || echo "EMQX     : ไม่ได้รัน"
