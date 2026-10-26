@@ -39,6 +39,7 @@ fi
 [ "$SEL" = "all" ] && SEL="docker node emqx mysql nodered"
 
 want() { echo " $SEL " | grep -q " $1 "; }
+running() { docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$1"; }
 
 if want emqx || want mysql || want nodered; then
   want docker || SEL="$SEL docker"
@@ -67,10 +68,12 @@ fi
 if want emqx; then
   echo "===== EMQX ====="
   docker rm -f emqx 2>/dev/null
+  # หมายเหตุ: emqx/emqx:5 ไม่มีบน Docker Hub ต้องใช้ latest หรือเลขเต็ม เช่น 5.8.0
   docker run -d --name emqx --restart always \
     -p 1883:1883 -p 8083:8083 -p 8084:8084 -p 8883:8883 -p 18083:18083 \
     -v emqx_data:/opt/emqx/data \
-    emqx/emqx:5
+    emqx/emqx:latest \
+    || echo "!!! EMQX ติดตั้งไม่สำเร็จ ดู error ด้านบน"
 fi
 
 if want mysql; then
@@ -81,7 +84,8 @@ if want mysql; then
     -e MYSQL_ROOT_PASSWORD="$MYSQL_PASS" \
     -e MYSQL_DATABASE=iotdb \
     -v mysql_data:/var/lib/mysql \
-    mysql:8
+    mysql:8 \
+    || echo "!!! MySQL ติดตั้งไม่สำเร็จ ดู error ด้านบน"
 fi
 
 if want nodered; then
@@ -90,21 +94,29 @@ if want nodered; then
   docker run -d --name nodered --restart always \
     -p 1880:1880 \
     -v nodered_data:/data \
-    nodered/node-red:latest
+    nodered/node-red:latest \
+    || echo "!!! Node-RED ติดตั้งไม่สำเร็จ ดู error ด้านบน"
   sleep 8
   docker exec nodered npm install --prefix /data node-red-node-mysql \
     && docker restart nodered
 fi
 
 if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
-  for p in 1880 1883 18083 3306; do ufw allow ${p}/tcp; done
+  for p in 1880 1883 8083 8084 8883 18083 3306; do ufw allow ${p}/tcp; done
 fi
 
 echo
 command -v docker >/dev/null 2>&1 && docker ps
 IP=$(hostname -I | awk '{print $1}')
 echo
-want nodered && echo "Node-RED : http://$IP:1880"
-want emqx    && echo "EMQX     : http://$IP:18083  (admin / public)  MQTT: $IP:1883"
-want mysql   && echo "MySQL    : $IP:3306  (root / $MYSQL_PASS)"
+# แสดงที่อยู่เฉพาะตัวที่รันอยู่จริง
+if want nodered; then
+  running nodered && echo "Node-RED : http://$IP:1880" || echo "Node-RED : ไม่ได้รัน"
+fi
+if want emqx; then
+  running emqx && echo "EMQX     : http://$IP:18083  (admin / public)  MQTT: $IP:1883" || echo "EMQX     : ไม่ได้รัน"
+fi
+if want mysql; then
+  running mysql && echo "MySQL    : $IP:3306  (root / $MYSQL_PASS)" || echo "MySQL    : ไม่ได้รัน"
+fi
 exit 0
